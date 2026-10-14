@@ -54,7 +54,7 @@ export class CodexBindings {
     if (!validThreadId(threadId)) throw fail('thread-invalid');
     return this.read().find((r) => r.endpointId === endpointId && r.threadId === threadId) || null;
   }
-  bind({ session, threadId, endpointId, cwd, expectedRevision }) {
+  bind({ session, threadId, endpointId, cwd, expectedRevision, sessionExists }) {
     if (session?.cli !== 'codex' || !validId(session.id) || !validThreadId(session.sessionUuid)
         || !validThreadId(threadId) || !Number.isSafeInteger(expectedRevision) || expectedRevision < 0) throw fail('binding-invalid');
     const io = this.io, lock = `${this.file}.lock`;
@@ -75,10 +75,32 @@ export class CodexBindings {
         }
         throw fail('binding-conflict');
       }
-      if (expectedRevision !== 0 || records.some((r) => r.endpointId === endpointId && r.threadId === threadId)) throw fail('binding-conflict');
+      // Reconcile leftovers before deciding there is a conflict.
+      //
+      // A record whose AM session no longer exists cannot be used — every read
+      // path rejects it (contextForThread's identity check) — but it still owns
+      // its (endpointId, threadId) key, so it blocks the thread from ever being
+      // bound or imported again. That is #172 reappearing, and it is reachable
+      // two ways that no amount of care in the delete route removes: a prune
+      // that could not commit, and a crash between the session rename and the
+      // bindings rename.
+      //
+      // So the next genuine bind clears them. Here, rather than on boot,
+      // because here is where the session list is authoritative and already in
+      // hand: an empty or half-loaded roster at startup would look like every
+      // binding being an orphan. Only callers that can prove it pass the
+      // predicate; without it nothing is pruned.
+      let kept = records;
+      if (sessionExists) {
+        kept = records.filter((r) => r.amSessionId === session.id || sessionExists(r.amSessionId));
+        for (const r of records) {
+          if (!kept.includes(r)) console.warn(`[codex] dropping binding for deleted session ${r.amSessionId} (thread ${r.threadId})`);
+        }
+      }
+      if (expectedRevision !== 0 || kept.some((r) => r.endpointId === endpointId && r.threadId === threadId)) throw fail('binding-conflict');
       const record = { amSessionId: session.id, amSessionUuid: session.sessionUuid, endpointId,
         threadId, cwd, revision: 1, boundAt: new Date().toISOString() };
-      const next = validate([...records, record]);
+      const next = validate([...kept, record]);
       tmp = `${this.file}.${randomUUID()}.tmp`;
       fd = io.openSync(tmp, 'wx', 0o600);
       io.writeFileSync(fd, JSON.stringify({ version: 1, bindings: next }, null, 2) + '\n');

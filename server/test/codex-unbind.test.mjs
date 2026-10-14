@@ -192,6 +192,67 @@ test('archiving a bound session keeps its binding', async () => {
   });
 });
 
+test('a session delete that cannot commit leaves the binding alone', async () => {
+  await api(async (ctx) => {
+    const session = await boundSession(ctx, 'shared-d', THREAD(4));
+    assert.equal((await ctx.call(`/api/sessions/${session.id}/archive`, { method: 'POST' })).status, 200);
+
+    // The half-commit this guards: store.remove() used to drop the row from
+    // memory and only LOG a failed write, so store.get() answered null over a
+    // row still on disk — the prune then passed its live-session check and took
+    // the binding, and the session came back on the next boot unbound.
+    //
+    // Fail exactly that one write and nothing else: a directory where
+    // sessions.json should be makes its rename EISDIR, while the group and
+    // order files beside it are untouched. A read-only data directory would
+    // also fail steps earlier in the route and prove nothing about this one.
+    const file = path.join(ctx.data, 'sessions.json');
+    const rows = fs.readFileSync(file, 'utf8');
+    fs.unlinkSync(file);
+    fs.mkdirSync(file);
+    let deleted;
+    try { deleted = await ctx.call(`/api/sessions/${session.id}`, { method: 'DELETE' }); }
+    finally { fs.rmdirSync(file); fs.writeFileSync(file, rows); }
+    assert.notEqual(deleted.status, 200, 'a delete that cannot commit must not report success');
+
+    assert.equal(ctx.bindings.forSession(session.id)?.threadId, THREAD(4),
+      'the binding outlives a delete that did not commit');
+    // And the row the delete failed to remove is still on disk, which is what
+    // makes keeping the binding the right answer rather than a missed cleanup.
+    assert.deepEqual(JSON.parse(rows).map((row) => row.id).filter((id) => id === session.id), [session.id]);
+  });
+});
+
+test('a stranded binding is cleared by the next genuine bind, not by hand', () => {
+  const f = unit();
+  try {
+    // What a failed prune — or a crash between the two renames — leaves: a
+    // record owning a thread, and no session it belongs to.
+    f.add('sess-gone', THREAD(1));
+    f.live.delete('sess-gone');
+    assert.throws(() => f.bindings.bind({ session: { id: 'sess-new', cli: 'codex', sessionUuid: crypto.randomUUID() },
+      threadId: THREAD(1), endpointId: ENDPOINT, cwd: f.cwd, expectedRevision: 0 }),
+      { code: 'binding-conflict' }, 'without a session list, nothing is assumed');
+
+    const bound = f.bindings.bind({ session: { id: 'sess-new', cli: 'codex', sessionUuid: crypto.randomUUID() },
+      threadId: THREAD(1), endpointId: ENDPOINT, cwd: f.cwd, expectedRevision: 0, sessionExists: f.sessionExists });
+    assert.equal(bound.amSessionId, 'sess-new');
+    assert.deepEqual(f.bindings.read().map((r) => r.amSessionId), ['sess-new'], 'the leftover went with it');
+  } finally { f.clean(); }
+});
+
+test('reconciliation never touches a record whose session is still there', () => {
+  const f = unit();
+  try {
+    f.add('sess-live', THREAD(1));
+    f.add('sess-gone', THREAD(2));
+    f.live.delete('sess-gone');
+    f.bindings.bind({ session: { id: 'sess-new', cli: 'codex', sessionUuid: crypto.randomUUID() },
+      threadId: THREAD(3), endpointId: ENDPOINT, cwd: f.cwd, expectedRevision: 0, sessionExists: f.sessionExists });
+    assert.deepEqual(f.bindings.read().map((r) => r.amSessionId).sort(), ['sess-live', 'sess-new']);
+  } finally { f.clean(); }
+});
+
 test('an ordinary stop is still refused for a bound session', async () => {
   await api(async (ctx) => {
     const session = await boundSession(ctx, 'shared-c', THREAD(3));

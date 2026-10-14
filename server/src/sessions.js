@@ -135,12 +135,35 @@ export function createCodexReference({ name, path, threadId }) {
   }
 }
 
+// A delete is a durable commit, not a memory edit that persist() may or may not
+// land. What follows it reads "this session no longer exists" as permission to
+// drop the Codex binding that keeps a standalone writer off a shared thread —
+// so the row has to be gone from the FILE before that is true. persist() swaps
+// memory first and only logs a failed write, which made store.get() answer null
+// over a row that was still on disk: the binding went, the session came back on
+// the next boot unbound, and the guard was spent.
+//
+// Same shape as setArchived/createCodexReference: write, fsync, rename, THEN
+// swap memory, and report a failure instead of logging it. The working
+// directory under DATA_DIR/workspaces/<id> is still intentionally left on disk,
+// so a delete never destroys the user's files.
 export function remove(id) {
-  const before = sessions.length;
-  sessions = sessions.filter((s) => s.id !== id);
-  if (sessions.length !== before) persist();
-  // NOTE: the working directory under DATA_DIR/workspaces/<id> is intentionally
-  // left on disk so a delete never destroys the user's files.
+  const next = sessions.filter((s) => s.id !== id);
+  if (next.length === sessions.length) return false;
+  const tmp = `${SESSIONS_FILE}.${crypto.randomUUID()}.tmp`;
+  let fd;
+  try {
+    fd = fs.openSync(tmp, 'wx', 0o600);
+    fs.writeFileSync(fd, JSON.stringify(next, null, 2)); fs.fsyncSync(fd);
+    fs.closeSync(fd); fd = undefined;
+    fs.renameSync(tmp, SESSIONS_FILE);
+    sessions = next;
+    fd = fs.openSync(dirname(SESSIONS_FILE), 'r'); fs.fsyncSync(fd);
+    return true;
+  } finally {
+    if (fd !== undefined) fs.closeSync(fd);
+    try { fs.unlinkSync(tmp); } catch (error) { if (error.code !== 'ENOENT') throw error; }
+  }
 }
 
 // Keep the original AM identity, name, folder, group references and history pin.

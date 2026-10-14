@@ -80,7 +80,10 @@ export async function bindExistingThread({ sessionId, threadId, expectedRevision
     if (signal?.aborted || client.closed) throw new ApiError(409, 'codex-verification-lost', 'Connection lost before binding.');
     // Synchronous checks + durable write: no await between revalidation and commit.
     beforeCommit();
-    return bindings.bind({ session: s, threadId, expectedRevision, cwd, endpointId: endpoint.id });
+    // `sessions` is this manager's live roster, so it can also settle whether a
+    // record left behind by a failed prune is still anyone's — see bind().
+    return bindings.bind({ session: s, threadId, expectedRevision, cwd, endpointId: endpoint.id,
+      sessionExists: (id) => sessions().some((other) => other.id === id) });
   } finally { client?.close(); }
 }
 

@@ -3600,14 +3600,21 @@ api.delete('/api/sessions/:id', async (req, res) => {
   if (isRemote(s.cli) && s.remote?.name) remote.forget(s.remote.name);
   groups.detachSession(s.id);
   order.drop(`s:${s.id}`);
+  // Throws if it could not commit, and then nothing below runs: the binding
+  // may only be pruned once the row is durably gone, not merely absent from
+  // memory. See sessions.remove.
   store.remove(s.id);
   // Delete prunes the Codex binding; archive deliberately keeps it, because
   // archiving is reversible and an unarchived session has to find its thread
   // again. Only AFTER store.remove: the record may never be dropped while a
   // session still exists that would then launch a standalone writer against a
   // thread the shared server owns — codexBindings.remove refuses that anyway.
-  // A failure here leaves an orphaned record, which is what #172 is about; it
-  // must not fail the delete, whose session is already gone.
+  //
+  // A failure here still answers 200, because the delete itself has committed
+  // and nothing the caller can do will change that. What it leaves behind is an
+  // orphaned record, and a crash between the two renames leaves the same one —
+  // so the leftover is reconciled rather than reported: the next genuine bind
+  // for that thread drops records whose session no longer exists (#172).
   if (s.cli === 'codex') {
     try { codexBindings.remove({ sessionId: s.id, sessionExists: (id) => !!store.get(id) }); }
     catch (error) { console.error('[codex.binding.prune]', error?.code || error?.message); }
