@@ -47,6 +47,29 @@ test('binds an already shared thread; native lookup survives independent reader 
   f.session.codexSessionId = sessionUuid;
   assert.throws(() => contextForThread(threadId, { sessions: f.facts.sessions, bindings: f.bindings, endpoint }), /no longer matches/);
 });
+// #175: a prune that could not commit — or a crash between the session rename
+// and the bindings rename — leaves a record owning a thread with no session it
+// belongs to, and nothing can use it or clear it. The writer is the only caller
+// that can prove the session is gone, so it is the one that reconciles. Driven
+// through bindExistingThread rather than CodexBindings.bind, because the
+// evidence it passes down is the part that has to keep working.
+test('a binding left by a deleted session is reconciled by the next real bind', async (t) => {
+  const f = fixture(t);
+  const otherThread = '44444444-4444-4444-8444-444444444444';
+  const liveSibling = { ...f.session, id: 'still-here', codexSessionId: otherThread };
+  f.facts.sessions.push(liveSibling);
+  f.bindings.bind({ session: { id: 'deleted', cli: 'codex', sessionUuid: '33333333-3333-4333-8333-333333333333' },
+    threadId, endpointId: endpoint.id, cwd: work, expectedRevision: 0 });
+  f.bindings.bind({ session: liveSibling, threadId: otherThread, endpointId: endpoint.id, cwd: work, expectedRevision: 0 });
+  assert.deepEqual(f.bindings.read().map((r) => r.amSessionId).sort(), ['deleted', 'still-here']);
+
+  const bound = await bindExistingThread(f.request, f.deps);
+  assert.equal(bound.amSessionId, 'a');
+  assert.deepEqual(f.bindings.read().map((r) => r.amSessionId).sort(), ['a', 'still-here'],
+    'the orphan went, the record of a session that is still here stayed');
+  assert.equal(contextForThread(threadId, { sessions: f.facts.sessions, bindings: f.bindings, endpoint }).amSessionId, 'a');
+});
+
 test('running owner, queued input, duplicate pin and wrong pin are refused before contacting server', async (t) => {
   for (const change of [(f) => f.facts.running = true, (f) => f.session.pendingPrompt = 'unsent',
     (f) => f.session.pendingImagePaths = ['/image'], (f) => f.facts.sessions.push({ ...f.session, id: 'other' }),

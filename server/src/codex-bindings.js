@@ -54,7 +54,7 @@ export class CodexBindings {
     if (!validThreadId(threadId)) throw fail('thread-invalid');
     return this.read().find((r) => r.endpointId === endpointId && r.threadId === threadId) || null;
   }
-  bind({ session, threadId, endpointId, cwd, expectedRevision }) {
+  bind({ session, threadId, endpointId, cwd, expectedRevision, sessionExists }) {
     if (session?.cli !== 'codex' || !validId(session.id) || !validThreadId(session.sessionUuid)
         || !validThreadId(threadId) || !Number.isSafeInteger(expectedRevision) || expectedRevision < 0) throw fail('binding-invalid');
     const io = this.io, lock = `${this.file}.lock`;
@@ -75,10 +75,32 @@ export class CodexBindings {
         }
         throw fail('binding-conflict');
       }
-      if (expectedRevision !== 0 || records.some((r) => r.endpointId === endpointId && r.threadId === threadId)) throw fail('binding-conflict');
+      // Reconcile leftovers before deciding there is a conflict.
+      //
+      // A record whose AM session no longer exists cannot be used — every read
+      // path rejects it (contextForThread's identity check) — but it still owns
+      // its (endpointId, threadId) key, so it blocks the thread from ever being
+      // bound or imported again. That is #172 reappearing, and it is reachable
+      // two ways that no amount of care in the delete route removes: a prune
+      // that could not commit, and a crash between the session rename and the
+      // bindings rename.
+      //
+      // So the next genuine bind clears them. Here, rather than on boot,
+      // because here is where the session list is authoritative and already in
+      // hand: an empty or half-loaded roster at startup would look like every
+      // binding being an orphan. Only callers that can prove it pass the
+      // predicate; without it nothing is pruned.
+      let kept = records;
+      if (sessionExists) {
+        kept = records.filter((r) => r.amSessionId === session.id || sessionExists(r.amSessionId));
+        for (const r of records) {
+          if (!kept.includes(r)) console.warn(`[codex] dropping binding for deleted session ${r.amSessionId} (thread ${r.threadId})`);
+        }
+      }
+      if (expectedRevision !== 0 || kept.some((r) => r.endpointId === endpointId && r.threadId === threadId)) throw fail('binding-conflict');
       const record = { amSessionId: session.id, amSessionUuid: session.sessionUuid, endpointId,
         threadId, cwd, revision: 1, boundAt: new Date().toISOString() };
-      const next = validate([...records, record]);
+      const next = validate([...kept, record]);
       tmp = `${this.file}.${randomUUID()}.tmp`;
       fd = io.openSync(tmp, 'wx', 0o600);
       io.writeFileSync(fd, JSON.stringify({ version: 1, bindings: next }, null, 2) + '\n');
@@ -86,6 +108,52 @@ export class CodexBindings {
       io.renameSync(tmp, this.file); tmp = undefined;
       // No success before both the file and directory entry are durable. If the
       // directory sync fails, report uncertainty; retry observes the same tuple.
+      fd = io.openSync(path.dirname(this.file), 'r');
+      io.fsyncSync(fd); io.closeSync(fd); fd = undefined;
+      return record;
+    } catch (error) {
+      if (error instanceof CodexBindingError) throw error;
+      if (error.code === 'EEXIST' && lockFd === undefined) throw fail('bindings-busy');
+      throw fail('bindings-write-failed');
+    } finally {
+      if (fd !== undefined) { try { io.closeSync(fd); } catch {} }
+      if (tmp) { try { io.unlinkSync(tmp); } catch {} }
+      if (lockFd !== undefined) { io.closeSync(lockFd); io.unlinkSync(lock); }
+    }
+  }
+  /**
+   * Drop one session's binding, so its thread can be bound or imported again.
+   * Returns the record that was removed, or null if there was nothing to remove
+   * — a session that was never bound is not an error to prune.
+   *
+   * REFUSES WHILE THAT AM SESSION STILL EXISTS. An unbound Codex session
+   * launches a standalone writer (see commandFor), and the thread this record
+   * names is owned by the shared server, so dropping the record out from under
+   * a live session is the one way this file can cause the harm it exists to
+   * prevent. The caller therefore prunes only after the session is gone from
+   * the store, and passes the predicate that proves it; it is re-checked under
+   * the lock, after the read, because the caller's check raced the lock wait.
+   *
+   * Same durability as bind(): exclusive lock, temp file, fsync, rename, then
+   * fsync of the directory entry.
+   */
+  remove({ sessionId, sessionExists }) {
+    if (!validId(sessionId) || typeof sessionExists !== 'function') throw fail('binding-invalid');
+    if (sessionExists(sessionId)) throw fail('binding-session-live');
+    const io = this.io, lock = `${this.file}.lock`;
+    let lockFd, tmp, fd;
+    try {
+      lockFd = io.openSync(lock, 'wx', 0o600);
+      const records = this.read();
+      const record = records.find((r) => r.amSessionId === sessionId);
+      if (!record) return null;
+      if (sessionExists(sessionId)) throw fail('binding-session-live');
+      const next = validate(records.filter((r) => r.amSessionId !== sessionId));
+      tmp = `${this.file}.${randomUUID()}.tmp`;
+      fd = io.openSync(tmp, 'wx', 0o600);
+      io.writeFileSync(fd, JSON.stringify({ version: 1, bindings: next }, null, 2) + '\n');
+      io.fsyncSync(fd); io.closeSync(fd); fd = undefined;
+      io.renameSync(tmp, this.file); tmp = undefined;
       fd = io.openSync(path.dirname(this.file), 'r');
       io.fsyncSync(fd); io.closeSync(fd); fd = undefined;
       return record;
