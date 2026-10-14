@@ -99,4 +99,50 @@ export class CodexBindings {
       if (lockFd !== undefined) { io.closeSync(lockFd); io.unlinkSync(lock); }
     }
   }
+  /**
+   * Drop one session's binding, so its thread can be bound or imported again.
+   * Returns the record that was removed, or null if there was nothing to remove
+   * — a session that was never bound is not an error to prune.
+   *
+   * REFUSES WHILE THAT AM SESSION STILL EXISTS. An unbound Codex session
+   * launches a standalone writer (see commandFor), and the thread this record
+   * names is owned by the shared server, so dropping the record out from under
+   * a live session is the one way this file can cause the harm it exists to
+   * prevent. The caller therefore prunes only after the session is gone from
+   * the store, and passes the predicate that proves it; it is re-checked under
+   * the lock, after the read, because the caller's check raced the lock wait.
+   *
+   * Same durability as bind(): exclusive lock, temp file, fsync, rename, then
+   * fsync of the directory entry.
+   */
+  remove({ sessionId, sessionExists }) {
+    if (!validId(sessionId) || typeof sessionExists !== 'function') throw fail('binding-invalid');
+    if (sessionExists(sessionId)) throw fail('binding-session-live');
+    const io = this.io, lock = `${this.file}.lock`;
+    let lockFd, tmp, fd;
+    try {
+      lockFd = io.openSync(lock, 'wx', 0o600);
+      const records = this.read();
+      const record = records.find((r) => r.amSessionId === sessionId);
+      if (!record) return null;
+      if (sessionExists(sessionId)) throw fail('binding-session-live');
+      const next = validate(records.filter((r) => r.amSessionId !== sessionId));
+      tmp = `${this.file}.${randomUUID()}.tmp`;
+      fd = io.openSync(tmp, 'wx', 0o600);
+      io.writeFileSync(fd, JSON.stringify({ version: 1, bindings: next }, null, 2) + '\n');
+      io.fsyncSync(fd); io.closeSync(fd); fd = undefined;
+      io.renameSync(tmp, this.file); tmp = undefined;
+      fd = io.openSync(path.dirname(this.file), 'r');
+      io.fsyncSync(fd); io.closeSync(fd); fd = undefined;
+      return record;
+    } catch (error) {
+      if (error instanceof CodexBindingError) throw error;
+      if (error.code === 'EEXIST' && lockFd === undefined) throw fail('bindings-busy');
+      throw fail('bindings-write-failed');
+    } finally {
+      if (fd !== undefined) { try { io.closeSync(fd); } catch {} }
+      if (tmp) { try { io.unlinkSync(tmp); } catch {} }
+      if (lockFd !== undefined) { io.closeSync(lockFd); io.unlinkSync(lock); }
+    }
+  }
 }

@@ -2378,10 +2378,19 @@ export async function restart(session, timeoutMs = 15_000) {
   ensureRunning(session);
 }
 
-/** Stop a session entirely (kills the process; viewers get an exit close code). */
-export function stop(id) {
+/**
+ * Stop a session entirely (kills the process; viewers get an exit close code).
+ *
+ * `force` is for deletion alone. A bound Codex session is otherwise refused,
+ * because stopping it would look like interrupting a turn that is running
+ * somewhere else — but the pane here is only the local shared client, and the
+ * thread on the server is untouched by killing it. Without the escape the
+ * DELETE route cannot get past its own first step, so a bound session can
+ * never be removed at all (#172).
+ */
+export function stop(id, { force = false } = {}) {
   const stopTarget = list().find((s) => s.id === id);
-  if (stopTarget?.cli === 'codex' && bindingIfKnown(stopTarget)) throw new ApiError(409, 'codex-shared-stop-unsupported',
+  if (!force && stopTarget?.cli === 'codex' && bindingIfKnown(stopTarget)) throw new ApiError(409, 'codex-shared-stop-unsupported',
     'This task runs on the shared server. Close the terminal view or use Codex to interrupt the current turn.');
   const host = hosts.get(id);
   if (!host) return;

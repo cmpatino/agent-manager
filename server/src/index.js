@@ -3591,7 +3591,9 @@ api.delete('/api/sessions/:id', async (req, res) => {
       code: 'not-archived',
     });
   }
-  stop(s.id);
+  // `force`: a bound Codex session refuses an ordinary stop, which would leave
+  // it undeletable. Killing its local shared client does not touch the thread.
+  stop(s.id, { force: true });
   // Close the agent's poll and drop the in-memory log, so a pane later created
   // with the same name reads the folder fresh instead of inheriting a ghost.
   // The folder itself stays on disk, like every other session's files.
@@ -3599,6 +3601,17 @@ api.delete('/api/sessions/:id', async (req, res) => {
   groups.detachSession(s.id);
   order.drop(`s:${s.id}`);
   store.remove(s.id);
+  // Delete prunes the Codex binding; archive deliberately keeps it, because
+  // archiving is reversible and an unarchived session has to find its thread
+  // again. Only AFTER store.remove: the record may never be dropped while a
+  // session still exists that would then launch a standalone writer against a
+  // thread the shared server owns — codexBindings.remove refuses that anyway.
+  // A failure here leaves an orphaned record, which is what #172 is about; it
+  // must not fail the delete, whose session is already gone.
+  if (s.cli === 'codex') {
+    try { codexBindings.remove({ sessionId: s.id, sessionExists: (id) => !!store.get(id) }); }
+    catch (error) { console.error('[codex.binding.prune]', error?.code || error?.message); }
+  }
   terminalAttachmentInsertions.delete(s.id);
   try { await removeSessionAttachments(s.id); } catch (e) { console.error('[attachments.remove]', e && e.message); }
   res.json({ ok: true });
