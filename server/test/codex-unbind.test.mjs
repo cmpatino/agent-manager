@@ -223,6 +223,10 @@ test('a session delete that cannot commit leaves the binding alone', async () =>
   });
 });
 
+// These two drive CodexBindings.bind directly, so they pin the reconciliation
+// itself. The wiring that reaches it — bindExistingThread passing the roster
+// down as `sessionExists` — is pinned in codex-context.test.mjs, where the
+// writer's own fixture lives.
 test('a stranded binding is cleared by the next genuine bind, not by hand', () => {
   const f = unit();
   try {
