@@ -17,6 +17,7 @@ import crypto from 'node:crypto';
 import express from 'express';
 import { WebSocketServer } from 'ws';
 import { createRequestPolicy, requestAdmission, terminalUpgrade, REQUEST_HEADERS } from './request-admission.js';
+import { frameAncestors, frameAncestorOrigins } from './framing.js';
 import {
   PORT, BIND_HOST, INTERNAL_HOST, PUBLIC_DIR, DATA_DIR, WORKSPACES_DIR, SKILLS_DIR, STATE_DIR,
   ensureDirs, cliCatalog, cliById, slugify, workspacePath, refreshVersions, PASSIVE_CLIS, isRemote,
@@ -74,6 +75,7 @@ import { fileWriteError, receiveWorkspaceFile, replaceWorkspaceText } from './sa
 installSlowFsProbe();
 
 const requestPolicy = createRequestPolicy(process.env, INTERNAL_HOST);
+const FRAME_ANCESTORS = frameAncestorOrigins(process.env);
 ensureDirs();
 refreshVersions();
 store.init();
@@ -231,6 +233,8 @@ process.on('unhandledRejection', (e) => console.error('[unhandledRejection]', e)
 process.on('uncaughtException', (e) => console.error('[uncaughtException]', e));
 
 const app = express();
+// Framing policy first: every response, refusals and errors included, says who may embed the app.
+app.use(frameAncestors(FRAME_ANCESTORS));
 // Admission precedes body parsing, upload streaming and operations capture.
 app.use(requestAdmission(requestPolicy));
 const api = apiRoutes(app, createValidator({ cliExists: cliById, sessionExists: store.get, groupExists: groups.get }));
@@ -1472,6 +1476,9 @@ api.get('/api/info', (_req, res) => res.json({
   home: process.env.HOME || null,
   spaceId: process.env.SPACE_ID || null,
   spaceHost: process.env.SPACE_HOST || null,
+  // Origins besides the app's own that may embed it (the CSP frame-ancestors
+  // list). The page checks its ancestors against this before rendering.
+  frameAncestors: FRAME_ANCESTORS,
   engine: 'libghostty',
   ghostty: ghosttyReady(),
   locked: isLocked(),

@@ -122,6 +122,7 @@ sets the window (1 / 3 / 7 days, or off).
 | `AM_SCROLLBACK_BYTES` | `67108864` | Maximum Ghostty scrollback memory per session |
 | `AM_RESIZE_SETTLE_MS` | `120` | Quiet period before a resize is applied to the PTY |
 | `BIND_HOST` | `127.0.0.1` | HTTP + WS bind address (`0.0.0.0` in the container image) |
+| `AM_FRAME_ANCESTORS` | — | Extra origins allowed to embed the app in a frame (comma-separated exact origins) |
 | `ANTHROPIC_API_KEY` | — | Claude Code / opencode / Hermes (Space **secret**) |
 | `OPENAI_API_KEY` / `CODEX_API_KEY` | — | Codex (Space secret) |
 | `GEMINI_API_KEY` | — | Gemini CLI (Space secret) |
@@ -134,6 +135,9 @@ reverse proxy in front of it — never expose the backend to an untrusted networ
 For a non-Space deployment also set `AM_ALLOWED_ORIGINS` to the exact
 browser-facing origin (for example `https://agents.example.com`); that
 request-admission allowlist is not a substitute for proxy authentication.
+Only the app itself (and, in a Space, huggingface.co) may frame it; to embed it
+in another site on purpose, list that site in `AM_FRAME_ANCESTORS` (see
+[browser request protection](browser-request-protection.md#framing)).
 Internal clients use `AM_HOST` and send `X-AM-Request: 1`, as the generated
 environment skill does.
 

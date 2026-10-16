@@ -64,6 +64,42 @@ HTTPS termination is supported without enabling Express `trust proxy`; forwarded
 headers neither populate the allowlist nor override the received Host. Do not expose
 an unauthenticated backend around the edge, and do not globally trust all proxies.
 
+## Framing
+
+Admission cannot tell a legitimate embed from a hostile one: a framed app's own
+requests carry the right Origin and marker. Who may frame the app is therefore
+decided separately, in two layers.
+
+**Server (`server/src/framing.js`).** Every response — HTML, the SPA fallback,
+static assets, `/api/*`, refusals, 404s and errors — carries
+`Content-Security-Policy: frame-ancestors 'self'`, plus `https://huggingface.co`
+when `SPACE_ID` is set (the Hub's Space page embeds the app). The middleware runs
+before admission and merges the directive into any CSP a route sets itself (file
+previews keep `sandbox …`), so a response never carries two policies. A policy
+that already names `frame-ancestors` is left alone. There is no
+`X-Frame-Options`: it cannot say "only huggingface.co", and `SAMEORIGIN` would
+break the Hub's own embed.
+
+| Setting | Effect |
+| --- | --- |
+| `AM_FRAME_ANCESTORS=https://portal.example,https://b.example` | Extra origins allowed to embed the app, added to the defaults. Exact http(s) origins only (same grammar as `AM_ALLOWED_ORIGINS`); wildcards, keywords, paths or separators fail startup. |
+
+**Page (`web/src/lib/framing.ts`).** If the header is stripped or ignored, the
+app still refuses to render inside a page it doesn't trust and shows only an
+**Open Agent Manager** button that opens it in its own tab. Trusted: the app's
+own origin, the Hub for `*.hf.space`, and the server's list (`frameAncestors` in
+`/api/info`). Every ancestor must be trusted (`location.ancestorOrigins`). Where
+that list is missing, same-origin ancestors are read directly, and a
+cross-origin one is accepted only as the direct parent that is also the top and
+named by the referrer; anything else is untrusted. A frame sandboxed without
+`allow-same-origin` (opaque origin) never renders: the Hub's Space page allows
+same-origin, but Hub-hosted user content that frames Spaces does not.
+
+Allowing `https://huggingface.co` trusts every page on that origin, including
+user-written ones. The Hub sandboxes the Space iframes it renders in user
+content without `allow-same-origin`, which the page check refuses. That defence
+rests on the Hub keeping that sandbox.
+
 ## Ordering and route inventory
 
 HTTP admission runs before JSON/text parsing, raw upload consumers, operation capture
