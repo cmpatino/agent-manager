@@ -193,3 +193,15 @@ test('reconnect never resumes a held writer, queued input or active goal',async(
   await assert.rejects(f.hub.reconnect('am',{recoveryKey:'a'.repeat(64)}));assert.equal(f.calls.some(c=>c.method==='thread/resume'),false);
  }
 });
+
+test('manager notification has explicit provenance, uses idle native queue and dedupes after restart', async()=>{
+ const f=fixture(),input={text:'[external notification] mock event',requestId:randomUUID()},source={source:'test-board',eventId:'n1'};
+ await f.hub.sendNotification('am',input,source);
+ await new CodexInput(f.deps).sendNotification('am',input,source);
+ assert.equal(f.calls.filter(c=>c.method==='thread/queue/add').length,1);
+ assert.equal(f.calls.filter(c=>c.method==='turn/start').length,0);
+ assert.deepEqual(f.hub.readReceipt(input.requestId).source,{kind:'notification',...source});
+ const busy=fixture();busy.thread.status={type:'active'};
+ await assert.rejects(busy.hub.sendNotification('am',{...input,requestId:randomUUID()},source),{code:'codex-task-busy'});
+ assert.equal(busy.calls.filter(c=>c.method==='thread/queue/add').length,0);
+});

@@ -1,0 +1,10 @@
+{
+  "boardUrl": "https://YOUR-BOARD.hf.space",
+  "handle": "YOUR-HANDLE",
+  "agentId": "YOUR-AM-ID",
+  "managerUrl": "http://localhost:YOUR-AM-PORT",
+  "tokenFile": "/data/home/.config/msgboard/credentials.json",
+  "stateFile": "/data/home/.config/msgboard/manager-inbox.json",
+  "initialCursor": null,
+  "ignoreIds": []
+}

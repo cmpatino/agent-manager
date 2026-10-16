@@ -199,6 +199,11 @@ export class CodexInput {
     return this.send(id, {text:`[message from ${name}:] [AM source ${attribution}]\n${text}`, requestId},
       {signal, source, verifySource});
   }
+  async sendNotification(id, input, notification, { signal, cancelled = () => {} } = {}) {
+    // A manager event is not an agent pretending to be a peer. Reuse the native
+    // idle queue and durable request receipt with its own explicit provenance.
+    return this.send(id, input, { signal, source: { kind: 'notification', ...notification }, verifySource: cancelled });
+  }
   async send(id, { text, requestId, attachments = [] }, { signal, source = null, verifySource = () => {} } = {}) {
     if (!uuid(requestId) || typeof text !== 'string' || (!text.trim() && !attachments.length) || text.length > 50000) throw new ApiError(400, 'invalid-input', 'A message and unique requestId are required.');
     if (this.busy.has(id)) throw fail('codex-send-busy', 'A message is already being submitted. Your draft is safe.');
