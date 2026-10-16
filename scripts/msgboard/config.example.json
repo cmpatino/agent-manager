@@ -5,6 +5,6 @@
   "managerUrl": "http://localhost:YOUR-AM-PORT",
   "tokenFile": "/data/home/.config/msgboard/credentials.json",
   "stateFile": "/data/home/.config/msgboard/manager-inbox.json",
-  "initialCursor": 0,
+  "initialCursor": null,
   "ignoreIds": []
 }

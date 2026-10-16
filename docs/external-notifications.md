@@ -86,7 +86,7 @@ containing `{"token":"..."}`; never put a token in the repository or CLI argumen
 Restrict the config/token/state directory to the operator. The adapter reads the
 token file on every poll, so token rotation does not require copying credentials.
 
-**Choose `initialCursor` explicitly from the previous listener's committed cursor.**
+**Replace the example's `initialCursor: null` with the previous listener's committed numeric cursor.**
 Do not initialize an existing account at zero or import an old inbox as new mail.
 `ignoreIds` permanently excludes explicitly dismissed historical messages. Messages
 at or below the initial cursor and the handle's own messages are saved as ignored
@@ -162,6 +162,7 @@ cd server
 node test/notifications.test.mjs
 node test/codex-input.test.mjs
 node test/msgboard-adapter.test.mjs
+node test/notifications-http.test.mjs
 ```
 
 The notification tests exercise production HTTP admission/audit/validation and
@@ -170,3 +171,8 @@ missing targets, persistence refusal and corrupt-state isolation. The Codex test
 exercise native queue submission and durable receipts. Python HTTP fixtures
 exercise cursor+inbox commit, manager refusals, independent collection while
 registration blocks, subscription filtering and listener restart without replay.
+The full HTTP test runs the real Manager server and Python adapter against a
+localhost board and a simulated native Codex daemon. It verifies busy deferral,
+idle native queue delivery, acknowledgement, restart of both processes without
+duplicate delivery, and preservation of the self-prompt restriction. No real
+board, production credential, or model is used.
